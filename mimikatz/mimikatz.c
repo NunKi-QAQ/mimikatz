@@ -5,6 +5,16 @@
 */
 #include "mimikatz.h"
 
+// Helper function to calculate the length of common prefix between two strings
+size_t _commonPrefixLength(const wchar_t *str1, const wchar_t *str2)
+{
+	size_t len = 0;
+	while (str1[len] && str2[len] && towlower(str1[len]) == towlower(str2[len])) {
+		len++;
+	}
+	return len;
+}
+
 const KUHL_M * mimikatz_modules[] = {
 	&kuhl_m_standard,
 	&kuhl_m_crypto,
@@ -40,18 +50,176 @@ int wmain(int argc, wchar_t * argv[])
 	NTSTATUS status = STATUS_SUCCESS;
 	int i;
 #if !defined(_POWERKATZ)
-	size_t len;
-	wchar_t input[0xffff];
-#endif
-	mimikatz_begin();
-	for(i = MIMIKATZ_AUTO_COMMAND_START ; (i < argc) && (status != STATUS_PROCESS_IS_TERMINATING) && (status != STATUS_THREAD_IS_TERMINATING) ; i++)
-	{
-		kprintf(L"\n" MIMIKATZ L"(" MIMIKATZ_AUTO_COMMAND_STRING L") # %s\n", argv[i]);
-		status = mimikatz_dispatchCommand(argv[i]);
-	}
+
+
 #if !defined(_POWERKATZ)
-	while ((status != STATUS_PROCESS_IS_TERMINATING) && (status != STATUS_THREAD_IS_TERMINATING))
-	{
+		while ((status != STATUS_PROCESS_IS_TERMINATING) && (status != STATUS_THREAD_IS_TERMINATING))
+		{
+			kprintf(L"\n" MIMIKATZ L" # "); fflush(stdin);
+
+			// Read input character by character to handle tab completion
+			BOOL inTabCompletion = FALSE;
+			wchar_t *currentInput = (wchar_t *) LocalAlloc(LPTR, ARRAYSIZE(input) * sizeof(wchar_t));
+			size_t currentLen = 0;
+
+			while (TRUE)
+			{
+				wint_t ch = fgetwc(stdin);
+				if (ch == WEOF) break;
+
+				// Handle backspace
+				if (ch == L'\b')
+				{
+					if (currentLen > 0)
+					{
+						currentLen--;
+						kprintf(L"\b \b"); // Erase the character
+						fflush(stdout);
+					}
+				}
+				// Handle enter key
+				else if (ch == L'\n' || ch == L'\r')
+				{
+					if (currentLen > 0)
+					{
+						currentInput[currentLen] = L'\0';
+						kprintf_inputline(L"%s\n", currentInput);
+						status = mimikatz_dispatchCommand(currentInput);
+						break;
+					}
+				}
+				// Handle tab key for auto-completion
+				else if (ch == L'\t')
+				{
+					if (!inTabCompletion && currentLen > 0)
+					{
+						inTabCompletion = TRUE;
+
+						// Get possible completions
+						wchar_t **completions = NULL;
+						size_t numCompletions = 0;
+						size_t maxCommonLength = 0;
+
+						// Try to match with modules first
+						for (unsigned short indexModule = 0; indexModule < ARRAYSIZE(mimikatz_modules); indexModule++)
+						{
+							if (_wcsnicmp(currentInput, mimikatz_modules[indexModule]->shortName, currentLen) == 0)
+							{
+								numCompletions++;
+								maxCommonLength = _commonPrefixLength(currentInput, mimikatz_modules[indexModule]->shortName);
+							}
+						}
+
+						// If no module matches, try commands
+						if (numCompletions == 0)
+						{
+							for (unsigned short indexModule = 0; indexModule < ARRAYSIZE(mimikatz_modules); indexModule++)
+							{
+								for (unsigned short indexCommand = 0; indexCommand < mimikatz_modules[indexModule]->nbCommands; indexCommand++)
+								{
+									if (_wcsnicmp(currentInput, mimikatz_modules[indexModule]->commands[indexCommand].command, currentLen) == 0)
+									{
+										numCompletions++;
+										maxCommonLength = _commonPrefixLength(currentInput, mimikatz_modules[indexModule]->commands[indexCommand].command);
+									}
+								}
+							}
+						}
+
+						// If we found exactly one match, auto-complete it
+						if (numCompletions == 1)
+						{
+							for (unsigned short indexModule = 0; indexModule < ARRAYSIZE(mimikatz_modules); indexModule++)
+							{
+								if (_wcsnicmp(currentInput, mimikatz_modules[indexModule]->shortName, currentLen) == 0 &&
+									_wcsicmp(mimikatz_modules[indexModule]->shortName, currentInput) != 0)
+								{
+									wcscat(currentInput, mimikatz_modules[indexModule]->shortName + currentLen);
+									currentLen = wcslen(currentInput);
+									kprintf(L"%s", currentInput + len);
+									fflush(stdout);
+									break;
+								}
+							}
+
+							if (currentLen == len)
+							{
+								for (unsigned short indexModule = 0; indexModule < ARRAYSIZE(mimikatz_modules); indexModule++)
+								{
+									for (unsigned short indexCommand = 0; indexCommand < mimikatz_modules[indexModule]->nbCommands; indexCommand++)
+									{
+										if (_wcsnicmp(currentInput, mimikatz_modules[indexModule]->commands[indexCommand].command, currentLen) == 0 &&
+											_wcsicmp(mimikatz_modules[indexModule]->commands[indexCommand].command, currentInput) != 0)
+										{
+											wcscat(currentInput, mimikatz_modules[indexModule]->commands[indexCommand].command + currentLen);
+											currentLen = wcslen(currentInput);
+											kprintf(L"%s", currentInput + len);
+											fflush(stdout);
+											break;
+										}
+									}
+
+									if (currentLen > len) break;
+								}
+							}
+						}
+						// If we found multiple matches, display them
+						else if (numCompletions > 1)
+						{
+							kprintf(L"\nPossible completions:\n");
+
+							for (unsigned short indexModule = 0; indexModule < ARRAYSIZE(mimikatz_modules); indexModule++)
+							{
+								if (_wcsnicmp(currentInput, mimikatz_modules[indexModule]->shortName, currentLen) == 0)
+								{
+									kprintf(L"  %s", mimikatz_modules[indexModule]->shortName);
+									if (mimikatz_modules[indexModule]->fullName)
+										kprintf(L" - %s", mimikatz_modules[indexModule]->fullName);
+									kprintf(L"\n");
+								}
+							}
+
+							for (unsigned short indexModule = 0; indexModule < ARRAYSIZE(mimikatz_modules); indexModule++)
+							{
+								for (unsigned short indexCommand = 0; indexCommand < mimikatz_modules[indexModule]->nbCommands; indexCommand++)
+								{
+									if (_wcsnicmp(currentInput, mimikatz_modules[indexModule]->commands[indexCommand].command, currentLen) == 0)
+									{
+										kprintf(L"  %s::%s", mimikatz_modules[indexModule]->shortName, mimikatz_modules[indexModule]->commands[indexCommand].command);
+										if (mimikatz_modules[indexModule]->commands[indexCommand].description)
+											kprintf(L" - %s", mimikatz_modules[indexModule]->commands[indexCommand].description);
+										kprintf(L"\n");
+									}
+								}
+							}
+
+							// Return to prompt with original input
+							kprintf(L"\n" MIMIKATZ L" # %s", currentInput);
+							fflush(stdout);
+						}
+					}
+				}
+				// Handle normal characters
+				else
+				{
+					if (ch < 32) continue; // Skip control characters
+
+					inTabCompletion = FALSE;
+
+					if (currentLen < ARRAYSIZE(input) - 1)
+					{
+						currentInput[currentLen++] = ch;
+						currentInput[currentLen] = L'\0';
+						kprintf(L"%c", ch);
+						fflush(stdout);
+					}
+				}
+			}
+
+			LocalFree(currentInput);
+		}
+#endif
+
 		kprintf(L"\n" MIMIKATZ L" # "); fflush(stdin);
 		if(fgetws(input, ARRAYSIZE(input), stdin) && (len = wcslen(input)) && (input[0] != L'\n'))
 		{
@@ -175,7 +343,7 @@ NTSTATUS mimikatz_doLocal(wchar_t * input)
 	wchar_t ** argv = CommandLineToArgvW(input, &argc), *module = NULL, *command = NULL, *match;
 	unsigned short indexModule, indexCommand;
 	BOOL moduleFound = FALSE, commandFound = FALSE;
-	
+
 	if(argv && (argc > 0))
 	{
 		if(match = wcsstr(argv[0], L"::"))
@@ -242,7 +410,7 @@ __declspec(dllexport) wchar_t * powershell_reflective_mimikatz(LPCWSTR input)
 {
 	int argc = 0;
 	wchar_t ** argv;
-	
+
 	if(argv = CommandLineToArgvW(input, &argc))
 	{
 		outputBufferElements = 0xff;
